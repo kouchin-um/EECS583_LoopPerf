@@ -16,6 +16,8 @@
 #include "llvm/Transforms/Utils/LoopUtils.h"
 
 #include  <iostream>
+#include  <unordered_set>
+#include  <queue>
 
 using namespace llvm;
 
@@ -42,7 +44,7 @@ namespace {
   struct LoopPerforationPass : public PassInfoMixin<LoopPerforationPass> {
 
     typedef struct LoopInfoT {
-          Loop* loop;
+          Loop* L;
           uint64_t instr_count;
     } LoopInfo;
 
@@ -73,13 +75,114 @@ namespace {
         loop_info.emplace_back(LoopInfo{loop, instr_count});
       }
 
+      std::vector<Loop*> loop_candidates;
+
       // The loops whose total frequency exceeds the threashold are selected as candidates
       for (auto &loop : loop_info) {
         if ((double)loop.instr_count / (double)CountFrequencyPass::total_freq > THREASHOLD){
-          // TODO
-          errs() << format("%d / %d\n", loop.instr_count, CountFrequencyPass::total_freq);  
+          loop_candidates.emplace_back(loop.L);
+          // errs() << format("%d / %d\n", loop.instr_count, CountFrequencyPass::total_freq);  
         }
       }
+
+
+      /** Selective Perforation **/
+
+      for (Loop* loop : loop_candidates) {
+        std::unordered_set<Instruction*> all_instr; // all instructions in the loop
+
+        /** SELECT BEGINS **/
+        // select all loads
+        std::unordered_set<Instruction*> target_instr;
+        std::queue<Instruction*> instr_queue;
+        for (BasicBlock *BB : loop->getBlocks()) {
+          for (Instruction &I : *BB) {
+            all_instr.emplace(&I);
+            if (I.getOpcode() == Instruction::Load) {
+              target_instr.emplace(&I);
+              instr_queue.push(&I);
+            }
+          }
+        }
+        /** END OF SELECT **/
+
+        /** EXPANSION BEGINS **/
+        while (!instr_queue.empty()){
+          // errs() << format("%d\n", target_instr.size());
+          Instruction* cur_instr = instr_queue.front();
+          instr_queue.pop();
+
+          // Check all the operand values
+          for (int i = 0; i < cur_instr->getNumOperands(); ++i) {
+            Value* source_value = cur_instr->getOperand(i);
+            Instruction* source_instr = dyn_cast<llvm::Instruction>(source_value);
+
+            // exclude the instructions not in the loop
+            if (all_instr.find(source_instr) == all_instr.end())
+              continue;
+
+            // skip if the instruction is already targeted
+            if (target_instr.find(source_instr) != target_instr.end())
+              continue;
+
+            bool perforable = true;
+            for (User* U:source_value->users()){ // U is of type User *
+              if (Instruction* I = dyn_cast<Instruction>(U)){
+                //an instruction uses the source_instr
+                if (target_instr.find(I) == target_instr.end()) {
+                  perforable = false;
+                  break;
+                }
+              }
+            }
+            if (perforable) {
+              target_instr.emplace(source_instr);
+              instr_queue.push(source_instr);
+            }
+          }
+
+          // Check all the uses
+          for (User* U:cur_instr->users()){ // U is of type User *
+            if (Instruction* dest_instr = dyn_cast<Instruction>(U)){
+              //an instruction uses V
+              // exclude the instructions not in the loop
+              if (all_instr.find(dest_instr) == all_instr.end())
+                continue;
+
+              // skip if the instruction is already targeted
+              if (target_instr.find(dest_instr) != target_instr.end())
+                continue;
+              
+              bool perforable = true;
+              for (int i = 0; i < dest_instr->getNumOperands(); ++i) {
+                Value* dest_source_value = dest_instr->getOperand(i);
+                Instruction* dest_source_instr = dyn_cast<llvm::Instruction>(dest_source_value);
+                if (target_instr.find(dest_source_instr) == target_instr.end()) {
+                  // TODO: what about invariants?
+                  perforable = false;
+                  break;
+                }
+              }
+              if (perforable) {
+                target_instr.emplace(dest_instr);
+                instr_queue.push(dest_instr);
+              }
+            }
+          }
+        }
+
+        /** END OF EXPANSION **/
+
+        // At this point, all the perforatable instructions are in
+        // std::unordered_set<Instruction*> target_instr
+
+        /** TRANFORMATION BEGINS **/
+
+
+
+        /** END OF TRANSFORMATION **/
+      }
+
       return PreservedAnalyses::all();
     }
   };
