@@ -104,6 +104,8 @@ namespace {
             }
           }
         }
+
+        // errs() << format("All instructions in this loop: %d\n", all_instr.size());
         /** END OF SELECT **/
 
         /** EXPANSION BEGINS **/
@@ -157,8 +159,8 @@ namespace {
               for (int i = 0; i < dest_instr->getNumOperands(); ++i) {
                 Value* dest_source_value = dest_instr->getOperand(i);
                 Instruction* dest_source_instr = dyn_cast<llvm::Instruction>(dest_source_value);
-                if (target_instr.find(dest_source_instr) == target_instr.end()) {
-                  // TODO: what about invariants?
+                if (target_instr.find(dest_source_instr) == target_instr.end() &&
+                    !loop->isLoopInvariant(dest_source_value)) {
                   perforable = false;
                   break;
                 }
