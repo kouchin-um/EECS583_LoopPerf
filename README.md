@@ -15,10 +15,21 @@ opt -disable-output -load-pass-plugin=./build/LoopPerforationPass/LoopPerforatio
 ```
 
 # Compile and run the executable 
+```
 clang test.ll -o exec_name
 ./exec_name
+```
+
+# Time profiling
+```
+time ./exec_name
+```
 
 
-
+# Test Accuracy
+The first argument is the benchmark name, and the second + third arguments are the output files of the executable. This python script would read from the file and compare with out
+```
+python3 accuracy_driver.py sum_to_n result_sum_to_n_1 result_sum_to_n_2
+```
 
 
