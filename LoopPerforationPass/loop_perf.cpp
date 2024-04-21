@@ -14,6 +14,9 @@
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
+#include "llvm/Transforms/Utils/Cloning.h" // [Transformation]
+#include "llvm/ADT/DenseMap.h" // [Transformation]
+#include "llvm/ADT/SmallVector.h" // [Transformation]
 
 #include  <iostream>
 #include  <unordered_set>
@@ -179,9 +182,72 @@ namespace {
         // std::unordered_set<Instruction*> target_instr
 
         /** TRANFORMATION BEGINS **/
+        // If target_instr is empty, don't modify the loop
+        if (target_instr.empty()) {
+          continue;
+        }
+        // 1. Duplicate the loop body to create a perforated version
+        SmallVector<BasicBlock*, 4> originalBlocks(loop->getBlocks().begin(), loop->getBlocks().end());
+        SmallVector<BasicBlock*, 4> perforatedBlocks;
+        DenseMap<BasicBlock*, BasicBlock*> blockMap;
 
+        for (BasicBlock* BB : originalBlocks) {
+          BasicBlock* ClonedBB = CloneBasicBlock(BB, blockMap, ".perf", &F);
+          perforatedBlocks.push_back(ClonedBB);
+          blockMap[BB] = ClonedBB;
+        }
 
+        // 2. Remapping Instructions
+        for (BasicBlock* BB : perforatedBlocks) {
+          for (Instruction &I : *BB) {
+            RemapInstruction(&I, blockMap, RF_NoModuleLevelChanges | RF_IgnoreMissingLocals);
+          }
+        }
 
+        // 3. Modifying the Perforated Version
+        for (BasicBlock* BB : perforatedBlocks) {
+          for (Instruction &I : *BB) {
+            // If is perforate target, remove it from the basic block
+            if (target_instr.count(&I)) {
+              I.eraseFromParent();
+            }
+          }
+        }
+
+        // 4. Inserting Conditional Branch
+        BasicBlock *preHeader = loop->getLoopPreheader();
+        // New entry point for loop
+        BasicBlock *newHeader = BasicBlock::Create(F.getContext(), "loop_perforated_entry", &F, blockMap[loop->getHeader()]);
+        IRBuilder<> builder(newHeader);
+        // ##### What condition? #####
+        Value *loopCondition = builder.CreateICmpEQ(builder.getInt1(true), builder.getInt1(true), "loopCondition");
+        BranchInst *branch = builder.CreateCondBr(loopCondition, blockMap[loop->getHeader()], blockMap[loop->getHeader()]->getTerminator()->getSuccessor(0));
+        preHeader->getTerminator()->replaceUsesOfWith(loop->getHeader(), newHeader);
+
+        // 5. Modify loop exits
+        for (BasicBlock* BB : originalBlocks) {
+          TerminatorInst *term = BB->getTerminator();
+          for (unsigned i = 0, nsucc = term->getNumSuccessors(); i < nsucc; ++i) {
+            BasicBlock *succ = term->getSuccessor(i);
+            // Check if successor is Within the Loop
+            /* If it is, this iteration of the inner loop is skipped. 
+            We are only interested in successors that reprsent exits 
+            from the loop, as those are the points where the control flow 
+            needs to be properly merged back into the main program flow. 
+            */
+            if (loop->contains(succ)) continue;
+            // find the corresponding cloned (perforated) version of the successor succ
+            BasicBlock *perforatedSucc = blockMap[succ];
+            term->setSuccessor(i, perforatedSucc);
+          }
+        }
+        // ##### Not sure if the cloned version also need modification #####
+
+        // Problem faced:
+        // 1. Branch condition
+        // 2. Perforation rate? currently set as must perforate (branch condition true)
+        // 2. Ensuring consistency after loop exits
+        
         /** END OF TRANSFORMATION **/
       }
 
