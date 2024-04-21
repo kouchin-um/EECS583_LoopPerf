@@ -183,9 +183,8 @@ namespace {
 
         /** TRANFORMATION BEGINS **/
         // If target_instr is empty, don't modify the loop
-        if (target_instr.empty()) {
-          continue;
-        }
+        if (target_instr.empty()) continue;
+        
         // 1. Duplicate the loop body to create a perforated version
         SmallVector<BasicBlock*, 4> originalBlocks(loop->getBlocks().begin(), loop->getBlocks().end());
         SmallVector<BasicBlock*, 4> perforatedBlocks;
@@ -247,7 +246,7 @@ namespace {
         // 1. Branch condition
         // 2. Perforation rate? currently set as must perforate (branch condition true)
         // 2. Ensuring consistency after loop exits
-        
+
         /** END OF TRANSFORMATION **/
       }
 
