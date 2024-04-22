@@ -17,6 +17,7 @@
 #include "llvm/Transforms/Utils/Cloning.h" // [Transformation]
 #include "llvm/ADT/DenseMap.h" // [Transformation]
 #include "llvm/ADT/SmallVector.h" // [Transformation]
+#include "llvm/IR/InstrTypes.h"
 
 #include  <iostream>
 #include  <unordered_set>
@@ -176,6 +177,42 @@ namespace {
           }
         }
 
+        // remove branches and their producers
+        // TODO: what about address calculations?
+        for (BasicBlock *BB : loop->getBlocks()) {
+          for (Instruction &I : *BB) {
+            unsigned op = I.getOpcode();
+            if (op == Instruction::Br ||
+                op == Instruction::Switch ||
+                op == Instruction::IndirectBr) {
+              std::queue<Instruction*> exclude_queue;
+              std::unordered_set<Instruction*> visited;
+
+              exclude_queue.push(&I);
+              visited.emplace(&I);
+
+              while (!exclude_queue.empty()) {
+                Instruction* cur_instr = exclude_queue.front();
+                exclude_queue.pop();
+                auto loc = target_instr.find(cur_instr);
+                if (loc != target_instr.end()) {
+                  target_instr.erase(loc);
+                }
+                for (int i = 0; i < cur_instr->getNumOperands(); ++i) {
+                  Value* source_value = cur_instr->getOperand(i);
+                  Instruction* source_instr = dyn_cast<llvm::Instruction>(source_value);
+                  if (all_instr.find(source_instr) == all_instr.end())
+                    continue;
+                  if (visited.find(source_instr) == visited.end()) {
+                    exclude_queue.push(source_instr);
+                    visited.emplace(source_instr);
+                  }
+                }
+              }
+            }
+          }
+        }
+
         /** END OF EXPANSION **/
 
         // At this point, all the perforatable instructions are in
@@ -186,18 +223,18 @@ namespace {
         if (target_instr.empty()) continue;
         
         // 1. Duplicate the loop body to create a perforated version
-        SmallVector<BasicBlock*, 4> originalBlocks(loop->getBlocks().begin(), loop->getBlocks().end());
-        SmallVector<BasicBlock*, 4> perforatedBlocks;
-        DenseMap<BasicBlock*, BasicBlock*> blockMap;
+        SmallVector<BasicBlock*, 4> perforatedBlocks(loop->getBlocks().begin(), loop->getBlocks().end());
+        SmallVector<BasicBlock*, 4> originalBlocksCopy;
+        ValueToValueMapTy blockMap;
 
-        for (BasicBlock* BB : originalBlocks) {
+        for (BasicBlock* BB : perforatedBlocks) {
           BasicBlock* ClonedBB = CloneBasicBlock(BB, blockMap, ".perf", &F);
-          perforatedBlocks.push_back(ClonedBB);
+          originalBlocksCopy.push_back(ClonedBB);
           blockMap[BB] = ClonedBB;
         }
 
         // 2. Remapping Instructions
-        for (BasicBlock* BB : perforatedBlocks) {
+        for (BasicBlock* BB : originalBlocksCopy) {
           for (Instruction &I : *BB) {
             RemapInstruction(&I, blockMap, RF_NoModuleLevelChanges | RF_IgnoreMissingLocals);
           }
@@ -208,38 +245,50 @@ namespace {
           for (Instruction &I : *BB) {
             // If is perforate target, remove it from the basic block
             if (target_instr.count(&I)) {
-              I.eraseFromParent();
+              auto *new_I = I.clone();
+              new_I->insertAfter(&I);
+              I.replaceAllUsesWith(new_I);
+              // I.eraseFromParent();
             }
           }
         }
 
         // 4. Inserting Conditional Branch
+        BasicBlock *oldHeader = loop->getHeader();
         BasicBlock *preHeader = loop->getLoopPreheader();
         // New entry point for loop
-        BasicBlock *newHeader = BasicBlock::Create(F.getContext(), "loop_perforated_entry", &F, blockMap[loop->getHeader()]);
+        BasicBlock *newHeader = BasicBlock::Create(F.getContext(), "loop_perforated_entry", &F, cast<BasicBlock>(blockMap[oldHeader]));
         IRBuilder<> builder(newHeader);
         // ##### What condition? #####
         Value *loopCondition = builder.CreateICmpEQ(builder.getInt1(true), builder.getInt1(true), "loopCondition");
-        BranchInst *branch = builder.CreateCondBr(loopCondition, blockMap[loop->getHeader()], blockMap[loop->getHeader()]->getTerminator()->getSuccessor(0));
-        preHeader->getTerminator()->replaceUsesOfWith(loop->getHeader(), newHeader);
+        BranchInst *branch = builder.CreateCondBr(loopCondition, cast<BasicBlock>(blockMap[oldHeader]), oldHeader);
+        for (BasicBlock *Pred : predecessors(oldHeader)) {
+          if (Pred != newHeader)
+            Pred->getTerminator()->replaceUsesOfWith(oldHeader, newHeader);
+        }
+        for (BasicBlock *Pred : predecessors(cast<BasicBlock>(blockMap[oldHeader]))) {
+          if (Pred != newHeader)
+            Pred->getTerminator()->replaceUsesOfWith(cast<BasicBlock>(blockMap[oldHeader]), newHeader);
+        }
+        preHeader->getTerminator()->replaceUsesOfWith(oldHeader, newHeader);
 
         // 5. Modify loop exits
-        for (BasicBlock* BB : originalBlocks) {
-          TerminatorInst *term = BB->getTerminator();
-          for (unsigned i = 0, nsucc = term->getNumSuccessors(); i < nsucc; ++i) {
-            BasicBlock *succ = term->getSuccessor(i);
-            // Check if successor is Within the Loop
-            /* If it is, this iteration of the inner loop is skipped. 
-            We are only interested in successors that reprsent exits 
-            from the loop, as those are the points where the control flow 
-            needs to be properly merged back into the main program flow. 
-            */
-            if (loop->contains(succ)) continue;
-            // find the corresponding cloned (perforated) version of the successor succ
-            BasicBlock *perforatedSucc = blockMap[succ];
-            term->setSuccessor(i, perforatedSucc);
-          }
-        }
+        // for (BasicBlock* BB : perforatedBlocks) {
+        //   Instruction *term = BB->getTerminator();
+        //   for (unsigned i = 0, nsucc = term->getNumSuccessors(); i < nsucc; ++i) {
+        //     BasicBlock *succ = term->getSuccessor(i);
+        //     // Check if successor is Within the Loop
+        //     /* If it is, this iteration of the inner loop is skipped. 
+        //     We are only interested in successors that reprsent exits 
+        //     from the loop, as those are the points where the control flow 
+        //     needs to be properly merged back into the main program flow. 
+        //     */
+        //     if (loop->contains(succ)) continue;
+        //     // find the corresponding cloned (perforated) version of the successor succ
+        //     BasicBlock *perforatedSucc = cast<BasicBlock>(blockMap[succ]);
+        //     term->setSuccessor(i, perforatedSucc);
+        //   }
+        // }
         // ##### Not sure if the cloned version also need modification #####
 
         // Problem faced:
