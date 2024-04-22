@@ -94,15 +94,70 @@ namespace {
 
       for (Loop* loop : loop_candidates) {
         std::unordered_set<Instruction*> all_instr; // all instructions in the loop
+        for (BasicBlock *BB : loop->getBlocks()) {
+          for (Instruction &I : *BB) {
+            all_instr.emplace(&I);
+          }
+        }
 
         /** SELECT BEGINS **/
+        // Mark those instructions that cannot be perforated
+        std::queue<Instruction*> exclude_queue;
+        std::unordered_set<Instruction*> exclude_set;
+        for (BasicBlock *BB : loop->getBlocks()) {
+          for (Instruction &I : *BB) {
+            unsigned op = I.getOpcode();
+            if (op == Instruction::Br ||
+                op == Instruction::Switch ||
+                op == Instruction::IndirectBr ||
+                op == Instruction::CallBr ||
+                op == Instruction::Call) {
+              exclude_queue.push(&I);
+              exclude_set.emplace(&I);
+            } else {
+              // operands of instructions: https://llvm.org/docs/LangRef.html
+              Instruction* ptr_instr;
+              if (op == Instruction::Load){
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
+              } else if (op == Instruction::Store) {
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
+              } else if (op == Instruction::GetElementPtr) {
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
+              } else if (op == Instruction::PtrToInt) {
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
+              } else {
+                continue;
+              }
+
+              if (all_instr.find(ptr_instr) != all_instr.end() &&
+                  exclude_set.find(ptr_instr) == exclude_set.end()) {
+                exclude_queue.push(ptr_instr);
+                exclude_set.emplace(ptr_instr);
+              }
+            }
+          }
+        }
+        while (!exclude_queue.empty()) {
+          Instruction* cur_instr = exclude_queue.front();
+          exclude_queue.pop();
+          for (int i = 0; i < cur_instr->getNumOperands(); ++i) {
+            Value* source_value = cur_instr->getOperand(i);
+            Instruction* source_instr = dyn_cast<llvm::Instruction>(source_value);
+            if (all_instr.find(source_instr) == all_instr.end())
+              continue;
+            if (exclude_set.find(source_instr) == exclude_set.end()) {
+              exclude_queue.push(source_instr);
+              exclude_set.emplace(source_instr);
+            }
+          }
+        }
+
         // select all loads
         std::unordered_set<Instruction*> target_instr;
         std::queue<Instruction*> instr_queue;
         for (BasicBlock *BB : loop->getBlocks()) {
           for (Instruction &I : *BB) {
-            all_instr.emplace(&I);
-            if (I.getOpcode() == Instruction::Load) {
+            if (I.getOpcode() == Instruction::Load && exclude_set.find(&I) == exclude_set.end()) {
               target_instr.emplace(&I);
               instr_queue.push(&I);
             }
@@ -129,6 +184,10 @@ namespace {
 
             // skip if the instruction is already targeted
             if (target_instr.find(source_instr) != target_instr.end())
+              continue;
+
+            // skip if the instruction is marked as not perforable
+            if (exclude_set.find(source_instr) != exclude_set.end())
               continue;
 
             bool perforable = true;
@@ -158,6 +217,10 @@ namespace {
               // skip if the instruction is already targeted
               if (target_instr.find(dest_instr) != target_instr.end())
                 continue;
+
+              // skip if the instruction is marked as not perforable
+              if (exclude_set.find(dest_instr) != exclude_set.end())
+                continue;
               
               bool perforable = true;
               for (int i = 0; i < dest_instr->getNumOperands(); ++i) {
@@ -177,41 +240,8 @@ namespace {
           }
         }
 
-        // remove branches and their producers
-        // TODO: what about address calculations?
-        for (BasicBlock *BB : loop->getBlocks()) {
-          for (Instruction &I : *BB) {
-            unsigned op = I.getOpcode();
-            if (op == Instruction::Br ||
-                op == Instruction::Switch ||
-                op == Instruction::IndirectBr) {
-              std::queue<Instruction*> exclude_queue;
-              std::unordered_set<Instruction*> visited;
-
-              exclude_queue.push(&I);
-              visited.emplace(&I);
-
-              while (!exclude_queue.empty()) {
-                Instruction* cur_instr = exclude_queue.front();
-                exclude_queue.pop();
-                auto loc = target_instr.find(cur_instr);
-                if (loc != target_instr.end()) {
-                  target_instr.erase(loc);
-                }
-                for (int i = 0; i < cur_instr->getNumOperands(); ++i) {
-                  Value* source_value = cur_instr->getOperand(i);
-                  Instruction* source_instr = dyn_cast<llvm::Instruction>(source_value);
-                  if (all_instr.find(source_instr) == all_instr.end())
-                    continue;
-                  if (visited.find(source_instr) == visited.end()) {
-                    exclude_queue.push(source_instr);
-                    visited.emplace(source_instr);
-                  }
-                }
-              }
-            }
-          }
-        }
+        // errs() << format("All instructions in this loop: %d\n", all_instr.size());
+        // errs() << format("Perforated instructions: %d\n", target_instr.size());
 
         /** END OF EXPANSION **/
 
@@ -241,16 +271,21 @@ namespace {
         }
 
         // 3. Modifying the Perforated Version
+        std::vector<Instruction*> to_be_removed;
         for (BasicBlock* BB : perforatedBlocks) {
+          int count = 0;
           for (Instruction &I : *BB) {
             // If is perforate target, remove it from the basic block
             if (target_instr.count(&I)) {
-              auto *new_I = I.clone();
-              new_I->insertAfter(&I);
-              I.replaceAllUsesWith(new_I);
-              // I.eraseFromParent();
+              to_be_removed.emplace_back(&I);
             }
           }
+        }
+
+        for (Instruction* remove_instr : to_be_removed) {
+          auto *new_I = Constant::getNullValue(remove_instr->getType());
+          remove_instr->replaceAllUsesWith(new_I);
+          remove_instr->eraseFromParent();
         }
 
         // 4. Inserting Conditional Branch
