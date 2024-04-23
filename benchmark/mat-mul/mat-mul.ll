@@ -13,7 +13,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @.str.6 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
 @.str.7 = private unnamed_addr constant [6 x i8] c"A.txt\00", align 1
 @.str.8 = private unnamed_addr constant [6 x i8] c"B.txt\00", align 1
-@.str.9 = private unnamed_addr constant [6 x i8] c"C.txt\00", align 1
+@.str.9 = private unnamed_addr constant [7 x i8] c"C1.txt\00", align 1
 
 ; Function Attrs: noinline nounwind uwtable
 define dso_local ptr @create_matrix() #0 {

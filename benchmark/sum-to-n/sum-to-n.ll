@@ -1,9 +1,9 @@
-; ModuleID = 'sum-to-n.c'
-source_filename = "sum-to-n.c"
+; ModuleID = 'benchmark/sum-to-n/sum-to-n.c'
+source_filename = "benchmark/sum-to-n/sum-to-n.c"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-@.str = private unnamed_addr constant [18 x i8] c"result_sum_to_n_1\00", align 1
+@.str = private unnamed_addr constant [22 x i8] c"result_sum_to_n_1.txt\00", align 1
 @.str.1 = private unnamed_addr constant [2 x i8] c"w\00", align 1
 @.str.2 = private unnamed_addr constant [3 x i8] c"%d\00", align 1
 @.str.3 = private unnamed_addr constant [30 x i8] c"sum_to_n finished executing \0A\00", align 1

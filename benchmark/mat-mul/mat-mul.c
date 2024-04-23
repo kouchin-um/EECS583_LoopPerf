@@ -85,7 +85,7 @@ int main() {
     multiply_matrices(A, B, C);
 
     // Write matrix C to file
-    write_matrix("C.txt", C);
+    write_matrix("C1.txt", C);
 
     // Free the allocated memory
     free_matrix(A);

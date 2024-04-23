@@ -427,6 +427,9 @@ LoopPerforationPass/CMakeFiles/LoopPerforationPass.dir/loop_perf.cpp.o: \
  /usr/local/include/llvm/ADT/DepthFirstIterator.h \
  /usr/local/include/llvm/Support/GenericDomTreeConstruction.h \
  /usr/include/c++/11/queue /usr/include/c++/11/bits/stl_queue.h \
+ /usr/local/include/llvm/Transforms/Utils/Cloning.h \
+ /usr/local/include/llvm/Analysis/AssumptionCache.h \
+ /usr/local/include/llvm/Transforms/Utils/SSAUpdater.h \
  /usr/include/c++/11/iostream /usr/include/c++/11/ostream \
  /usr/include/c++/11/ios /usr/include/c++/11/bits/basic_ios.h \
  /usr/include/c++/11/bits/locale_facets.h /usr/include/c++/11/cwctype \

@@ -14,6 +14,11 @@
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
+#include "llvm/Transforms/Utils/Cloning.h" // [Transformation]
+#include "llvm/ADT/DenseMap.h" // [Transformation]
+#include "llvm/ADT/SmallVector.h" // [Transformation]
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/Transforms/Utils/SSAUpdater.h"
 
 #include  <iostream>
 #include  <unordered_set>
@@ -22,6 +27,7 @@
 using namespace llvm;
 
 #define THREASHOLD 0.2
+#define SELECTIVE_RATE 3
 
 namespace {
 
@@ -90,15 +96,70 @@ namespace {
 
       for (Loop* loop : loop_candidates) {
         std::unordered_set<Instruction*> all_instr; // all instructions in the loop
+        for (BasicBlock *BB : loop->getBlocks()) {
+          for (Instruction &I : *BB) {
+            all_instr.emplace(&I);
+          }
+        }
 
         /** SELECT BEGINS **/
+        // Mark those instructions that cannot be perforated
+        std::queue<Instruction*> exclude_queue;
+        std::unordered_set<Instruction*> exclude_set;
+        for (BasicBlock *BB : loop->getBlocks()) {
+          for (Instruction &I : *BB) {
+            unsigned op = I.getOpcode();
+            if (op == Instruction::Br ||
+                op == Instruction::Switch ||
+                op == Instruction::IndirectBr ||
+                op == Instruction::CallBr ||
+                op == Instruction::Call) {
+              exclude_queue.push(&I);
+              exclude_set.emplace(&I);
+            } else {
+              // operands of instructions: https://llvm.org/docs/LangRef.html
+              Instruction* ptr_instr;
+              if (op == Instruction::Load){
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
+              } else if (op == Instruction::Store) {
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
+              } else if (op == Instruction::GetElementPtr) {
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
+              } else if (op == Instruction::PtrToInt) {
+                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
+              } else {
+                continue;
+              }
+
+              if (all_instr.find(ptr_instr) != all_instr.end() &&
+                  exclude_set.find(ptr_instr) == exclude_set.end()) {
+                exclude_queue.push(ptr_instr);
+                exclude_set.emplace(ptr_instr);
+              }
+            }
+          }
+        }
+        while (!exclude_queue.empty()) {
+          Instruction* cur_instr = exclude_queue.front();
+          exclude_queue.pop();
+          for (int i = 0; i < cur_instr->getNumOperands(); ++i) {
+            Value* source_value = cur_instr->getOperand(i);
+            Instruction* source_instr = dyn_cast<llvm::Instruction>(source_value);
+            if (all_instr.find(source_instr) == all_instr.end())
+              continue;
+            if (exclude_set.find(source_instr) == exclude_set.end()) {
+              exclude_queue.push(source_instr);
+              exclude_set.emplace(source_instr);
+            }
+          }
+        }
+
         // select all loads
         std::unordered_set<Instruction*> target_instr;
         std::queue<Instruction*> instr_queue;
         for (BasicBlock *BB : loop->getBlocks()) {
           for (Instruction &I : *BB) {
-            all_instr.emplace(&I);
-            if (I.getOpcode() == Instruction::Load) {
+            if (I.getOpcode() == Instruction::Load && exclude_set.find(&I) == exclude_set.end()) {
               target_instr.emplace(&I);
               instr_queue.push(&I);
             }
@@ -125,6 +186,10 @@ namespace {
 
             // skip if the instruction is already targeted
             if (target_instr.find(source_instr) != target_instr.end())
+              continue;
+
+            // skip if the instruction is marked as not perforable
+            if (exclude_set.find(source_instr) != exclude_set.end())
               continue;
 
             bool perforable = true;
@@ -154,6 +219,10 @@ namespace {
               // skip if the instruction is already targeted
               if (target_instr.find(dest_instr) != target_instr.end())
                 continue;
+
+              // skip if the instruction is marked as not perforable
+              if (exclude_set.find(dest_instr) != exclude_set.end())
+                continue;
               
               bool perforable = true;
               for (int i = 0; i < dest_instr->getNumOperands(); ++i) {
@@ -173,14 +242,118 @@ namespace {
           }
         }
 
+        // errs() << format("All instructions in this loop: %d\n", all_instr.size());
+        // errs() << format("Perforated instructions: %d\n", target_instr.size());
+
         /** END OF EXPANSION **/
 
         // At this point, all the perforatable instructions are in
         // std::unordered_set<Instruction*> target_instr
 
         /** TRANFORMATION BEGINS **/
+        // If target_instr is empty, don't modify the loop
+        if (target_instr.empty()) continue;
+        
+        // 1. Duplicate the loop body to create a perforated version
+        SmallVector<BasicBlock*, 4> perforatedBlocks(loop->getBlocks().begin(), loop->getBlocks().end());
+        SmallVector<BasicBlock*, 4> originalBlocksCopy;
+        ValueToValueMapTy blockMap;
 
+        for (BasicBlock* BB : perforatedBlocks) {
+          BasicBlock* ClonedBB = CloneBasicBlock(BB, blockMap, ".perf", &F);
+          originalBlocksCopy.push_back(ClonedBB);
+          blockMap[BB] = ClonedBB;
+        }
 
+        // 2. Remapping Instructions
+        for (BasicBlock* BB : originalBlocksCopy) {
+          for (Instruction &I : *BB) {
+            RemapInstruction(&I, blockMap, RF_NoModuleLevelChanges | RF_IgnoreMissingLocals);
+          }
+        }
+
+        // 3. Modifying the Perforated Version
+        std::vector<Instruction*> to_be_removed;
+        for (BasicBlock* BB : perforatedBlocks) {
+          int count = 0;
+          for (Instruction &I : *BB) {
+            // If is perforate target, remove it from the basic block
+            if (target_instr.count(&I)) {
+              to_be_removed.emplace_back(&I);
+            }
+          }
+        }
+
+        for (Instruction* remove_instr : to_be_removed) {
+          auto *new_I = Constant::getNullValue(remove_instr->getType());
+          remove_instr->replaceAllUsesWith(new_I);
+          remove_instr->eraseFromParent();
+        }
+
+        // 4. Inserting Conditional Branch
+        BasicBlock *oldHeader = loop->getHeader();
+        BasicBlock *preHeader = loop->getLoopPreheader();
+        // New entry point for loop
+        BasicBlock *newHeader = BasicBlock::Create(F.getContext(), "loop_perforated_entry", &F, cast<BasicBlock>(blockMap[oldHeader]));
+        IRBuilder<> builder(newHeader);
+        // ##### What condition? #####
+        Value *dummyCondition = builder.CreateICmpEQ(builder.getInt1(true), builder.getInt1(true), "dummyCondition");
+        BranchInst *dummybranch = builder.CreateCondBr(dummyCondition, oldHeader, cast<BasicBlock>(blockMap[oldHeader]));
+        for (BasicBlock *Pred : predecessors(oldHeader)) {
+          if (Pred != newHeader)
+            Pred->getTerminator()->replaceUsesOfWith(oldHeader, newHeader);
+        }
+        for (BasicBlock *Pred : predecessors(cast<BasicBlock>(blockMap[oldHeader]))) {
+          if (Pred != newHeader)
+            Pred->getTerminator()->replaceUsesOfWith(cast<BasicBlock>(blockMap[oldHeader]), newHeader);
+        }
+        preHeader->getTerminator()->replaceUsesOfWith(oldHeader, newHeader);
+
+        static LLVMContext ctx;
+        Instruction *induct_init = BinaryOperator::CreateAdd(ConstantInt::get(Type::getInt32Ty(ctx), 0), ConstantInt::get(Type::getInt32Ty(ctx), 0));
+        induct_init->insertBefore(preHeader->getTerminator());
+
+        PHINode* new_phi = llvm::PHINode::Create(Type::getInt32Ty(ctx), 0, "new_phi", &(newHeader->front()));
+
+        new_phi->addIncoming(induct_init, preHeader);
+        for (BasicBlock* p_bb : predecessors(newHeader)) {
+          if (p_bb == preHeader) continue;
+          Instruction *increment = BinaryOperator::CreateAdd(new_phi, ConstantInt::get(Type::getInt32Ty(ctx), 1));
+          increment->insertBefore(p_bb->getTerminator());
+          new_phi->addIncoming(increment, p_bb);
+        }
+
+        Value *udiv = builder.CreateUDiv(new_phi, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
+        Value *mult = builder.CreateMul(udiv, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
+        Value *diff = builder.CreateSub(new_phi, mult);
+
+        Value *loopCondition = builder.CreateICmpEQ(diff, ConstantInt::get(Type::getInt32Ty(ctx), 0), "loopCondition");
+        BranchInst *branch = builder.CreateCondBr(loopCondition, oldHeader, cast<BasicBlock>(blockMap[oldHeader]));
+        dummybranch->eraseFromParent();
+
+        // 5. Modify loop exits
+        // for (BasicBlock* BB : perforatedBlocks) {
+        //   Instruction *term = BB->getTerminator();
+        //   for (unsigned i = 0, nsucc = term->getNumSuccessors(); i < nsucc; ++i) {
+        //     BasicBlock *succ = term->getSuccessor(i);
+        //     // Check if successor is Within the Loop
+        //     /* If it is, this iteration of the inner loop is skipped. 
+        //     We are only interested in successors that reprsent exits 
+        //     from the loop, as those are the points where the control flow 
+        //     needs to be properly merged back into the main program flow. 
+        //     */
+        //     if (loop->contains(succ)) continue;
+        //     // find the corresponding cloned (perforated) version of the successor succ
+        //     BasicBlock *perforatedSucc = cast<BasicBlock>(blockMap[succ]);
+        //     term->setSuccessor(i, perforatedSucc);
+        //   }
+        // }
+        // ##### Not sure if the cloned version also need modification #####
+
+        // Problem faced:
+        // 1. Branch condition
+        // 2. Perforation rate? currently set as must perforate (branch condition true)
+        // 2. Ensuring consistency after loop exits
 
         /** END OF TRANSFORMATION **/
       }
