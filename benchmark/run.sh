@@ -7,8 +7,14 @@ PATH2LIB="../build/LoopPerforationPass/LoopPerforationPass.so"        # Specify 
 PASS1=count-freq 
 PASS2=loop-perf
 
+TESTDIR=$(dirname ${1})
+
 # Delete outputs from previous runs. Update this when you want to retain some files.
+
 rm -f default.profraw *_prof *_fplicm *.bc *.profdata *_output *.ll
+cd ${TESTDIR}
+rm -f default.profraw *_prof *_fplicm *.bc *.profdata *_output *.ll
+cd ..
 
 # Convert source code to bitcode (IR).
 clang -emit-llvm -c ${1}.c -Xclang -disable-O0-optnone -o ${1}.bc
@@ -25,7 +31,11 @@ opt -passes='pgo-instr-gen,instrprof' ${1}.ls.bc -o ${1}.ls.prof.bc
 clang -fprofile-instr-generate ${1}.ls.prof.bc -o ${1}_prof
 
 # When we run the profiler embedded executable, it generates a default.profraw file that contains the profile data.
-./${1}_prof > correct_output
+echo "###############################"
+echo "@@@ Running the original program..."
+echo "@@@ Time profile result:"
+time ./${1}_prof > ${TESTDIR}/correct_output
+echo "@@@ Output stored to ${TESTDIR}/correct_output"
 
 # Converting it to LLVM form. This step can also be used to combine multiple profraw files,
 # in case you want to include different profile runs together.
@@ -43,7 +53,12 @@ clang ${1}.ls.bc -o ${1}_no_fplicm
 clang ${1}.fplicm.bc -o ${1}_fplicm
 
 # # Produce output from binary to check correctness
-# ./${1}_fplicm > fplicm_output
+echo "###############################"
+echo "@@@ Running the original program..."
+echo "@@@ Time profile result:"
+time ./${1}_fplicm > ${TESTDIR}/fplicm_output
+echo "@@@ Output stored to ${TESTDIR}/fplicm_output"
+
 
 # echo -e "\n=== Program Correctness Validation ==="
 # if [ "$(diff correct_output fplicm_output)" != "" ]; then
@@ -59,5 +74,14 @@ clang ${1}.fplicm.bc -o ${1}_fplicm
 #     echo -e "\n\n"
 # fi
 
+echo "###############################"
+echo "@@@ Analyzing the results..."
+python3 accuracy_driver.py ${TESTDIR} ${TESTDIR}/correct_output ${TESTDIR}/fplicm_output
+
+echo "@@@ Running finished"
+
 # Cleanup: Remove this if you want to retain the created files. And you do need to.
-# rm -f default.profraw *_prof *_fplicm *.bc *.profdata *_output *.ll
+rm -f default.profraw *_prof *_fplicm *.bc *.profdata *_output *.ll
+cd ${TESTDIR}
+rm -f default.profraw *_prof *_fplicm *.bc *.profdata *_output *.ll
+cd ..

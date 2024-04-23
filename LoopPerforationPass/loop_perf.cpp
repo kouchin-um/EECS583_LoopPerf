@@ -28,7 +28,7 @@ using namespace llvm;
 
 #define THREASHOLD 0.05
 #define SELECTIVE_RATE 4  // for now, only support power of 2
-#define FLIP_PERF true
+#define FLIP_PERF false
 // O: original code
 // P: perforated code
 // FLIP_PERF = false: O O O P O O O P ...

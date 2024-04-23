@@ -8,7 +8,7 @@ BENCH=$1
 # Default to cfg
 VIZ_TYPE=${2:-cfg}
 
-OUTPUT_DIR=$(realpath ./dot)  # will put .pdf file here
+OUTPUT_DIR=$(realpath ./$(dirname "$BENCH")/dot)  # will put .pdf file here
 TMP_DIR=$OUTPUT_DIR/tmp       # will put .dot files here
 BITCODE_DIR=$(pwd)            # run this script from the same dir as bitcode
 
@@ -43,7 +43,7 @@ if [ $VIZ_TYPE = "cfg" ]; then
 else
   DOT_FILES=$(ls *.dot)
 fi
-cat $DOT_FILES | dot -Tpdf > $OUTPUT_DIR/$BENCH.$VIZ_TYPE.pdf
+cat $DOT_FILES | dot -Tpdf > $OUTPUT_DIR/$(basename "$BENCH").$VIZ_TYPE.pdf
 echo "Created $BENCH.$VIZ_TYPE.pdf"
 
 rm -rf $TMP_DIR

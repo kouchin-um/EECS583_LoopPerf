@@ -58,7 +58,7 @@ def compare_sum(filename1, filename2):
     print("number 2: ", number2)
     if number1 != number2:
         # some metrics to compare
-        error = (max(number1, number2) - min(number2 - number1)) / (max(number1, number2))
+        error = (max(number1, number2) - min(number2, number1)) / (max(number1, number2))
         print("error rate: ", error)
 
         # log scale:
@@ -75,7 +75,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.benchmark == 'sum_to_n':
+    if args.benchmark == 'sum-to-n':
         print("executing sum to n comparison")
         compare_sum(args.filename1, args.filename2)
     elif args.benchmark == 'mat-mul':
