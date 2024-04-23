@@ -26,8 +26,13 @@
 
 using namespace llvm;
 
-#define THREASHOLD 0.2
-#define SELECTIVE_RATE 3
+#define THREASHOLD 0.05
+#define SELECTIVE_RATE 4  // for now, only support power of 2
+#define FLIP_PERF true
+// O: original code
+// P: perforated code
+// FLIP_PERF = false: O O O P O O O P ...
+// FLIP_PERF = true:  P P P O P P P O ...
 
 namespace {
 
@@ -139,6 +144,16 @@ namespace {
             }
           }
         }
+
+        // exclude loop inductions
+        PHINode* canonical = loop->getCanonicalInductionVariable();
+        if (canonical != NULL) {
+          if (exclude_set.find(canonical) == exclude_set.end()) {
+            exclude_queue.push(canonical);
+            exclude_set.emplace(canonical);
+          }
+        }
+
         while (!exclude_queue.empty()) {
           Instruction* cur_instr = exclude_queue.front();
           exclude_queue.pop();
@@ -150,6 +165,20 @@ namespace {
             if (exclude_set.find(source_instr) == exclude_set.end()) {
               exclude_queue.push(source_instr);
               exclude_set.emplace(source_instr);
+            }
+          }
+
+          // exclude induction variables in the load/store pair form
+          if (cur_instr->getOpcode() == Instruction::Load) {
+            Value* source_ptr = cur_instr->getOperand(0);
+            Instruction* source_ptr_instr = dyn_cast<llvm::Instruction>(source_ptr);
+            for (Instruction* find_store : all_instr) {
+              if (find_store->getOpcode() == Instruction::Store && find_store->getOperand(1) == source_ptr) {
+                if (exclude_set.find(find_store) == exclude_set.end()) {
+                  exclude_queue.push(find_store);
+                  exclude_set.emplace(find_store);
+                }
+              }
             }
           }
         }
@@ -323,12 +352,16 @@ namespace {
           new_phi->addIncoming(increment, p_bb);
         }
 
-        Value *udiv = builder.CreateUDiv(new_phi, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
-        Value *mult = builder.CreateMul(udiv, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
-        Value *diff = builder.CreateSub(new_phi, mult);
+        Value *mod = builder.CreateAnd(new_phi, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE-1));
+        // Value *mult = builder.CreateMul(udiv, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
+        // Value *diff = builder.CreateSub(new_phi, mult);
 
-        Value *loopCondition = builder.CreateICmpEQ(diff, ConstantInt::get(Type::getInt32Ty(ctx), 0), "loopCondition");
-        BranchInst *branch = builder.CreateCondBr(loopCondition, oldHeader, cast<BasicBlock>(blockMap[oldHeader]));
+        Value *loopCondition = builder.CreateICmpEQ(mod, ConstantInt::get(Type::getInt32Ty(ctx), 0), "loopCondition");
+        if (FLIP_PERF) {
+          BranchInst *branch = builder.CreateCondBr(loopCondition, cast<BasicBlock>(blockMap[oldHeader]), oldHeader);
+        } else {
+          BranchInst *branch = builder.CreateCondBr(loopCondition, oldHeader, cast<BasicBlock>(blockMap[oldHeader]));
+        }
         dummybranch->eraseFromParent();
 
         // 5. Modify loop exits
@@ -351,8 +384,8 @@ namespace {
         // ##### Not sure if the cloned version also need modification #####
 
         // Problem faced:
-        // 1. Branch condition
-        // 2. Perforation rate? currently set as must perforate (branch condition true)
+        // 1. Branch condition - solved
+        // 2. Perforation rate? currently set as must perforate (branch condition true) - constant power of 2
         // 2. Ensuring consistency after loop exits
 
         /** END OF TRANSFORMATION **/
