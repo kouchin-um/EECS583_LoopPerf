@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseMap.h" // [Transformation]
 #include "llvm/ADT/SmallVector.h" // [Transformation]
 #include "llvm/IR/InstrTypes.h"
+#include "llvm/Transforms/Utils/SSAUpdater.h"
 
 #include  <iostream>
 #include  <unordered_set>
@@ -26,6 +27,7 @@
 using namespace llvm;
 
 #define THREASHOLD 0.2
+#define SELECTIVE_RATE 3
 
 namespace {
 
@@ -295,8 +297,8 @@ namespace {
         BasicBlock *newHeader = BasicBlock::Create(F.getContext(), "loop_perforated_entry", &F, cast<BasicBlock>(blockMap[oldHeader]));
         IRBuilder<> builder(newHeader);
         // ##### What condition? #####
-        Value *loopCondition = builder.CreateICmpEQ(builder.getInt1(true), builder.getInt1(true), "loopCondition");
-        BranchInst *branch = builder.CreateCondBr(loopCondition, cast<BasicBlock>(blockMap[oldHeader]), oldHeader);
+        Value *dummyCondition = builder.CreateICmpEQ(builder.getInt1(true), builder.getInt1(true), "dummyCondition");
+        BranchInst *dummybranch = builder.CreateCondBr(dummyCondition, oldHeader, cast<BasicBlock>(blockMap[oldHeader]));
         for (BasicBlock *Pred : predecessors(oldHeader)) {
           if (Pred != newHeader)
             Pred->getTerminator()->replaceUsesOfWith(oldHeader, newHeader);
@@ -306,6 +308,28 @@ namespace {
             Pred->getTerminator()->replaceUsesOfWith(cast<BasicBlock>(blockMap[oldHeader]), newHeader);
         }
         preHeader->getTerminator()->replaceUsesOfWith(oldHeader, newHeader);
+
+        static LLVMContext ctx;
+        Instruction *induct_init = BinaryOperator::CreateAdd(ConstantInt::get(Type::getInt32Ty(ctx), 0), ConstantInt::get(Type::getInt32Ty(ctx), 0));
+        induct_init->insertBefore(preHeader->getTerminator());
+
+        PHINode* new_phi = llvm::PHINode::Create(Type::getInt32Ty(ctx), 0, "new_phi", &(newHeader->front()));
+
+        new_phi->addIncoming(induct_init, preHeader);
+        for (BasicBlock* p_bb : predecessors(newHeader)) {
+          if (p_bb == preHeader) continue;
+          Instruction *increment = BinaryOperator::CreateAdd(new_phi, ConstantInt::get(Type::getInt32Ty(ctx), 1));
+          increment->insertBefore(p_bb->getTerminator());
+          new_phi->addIncoming(increment, p_bb);
+        }
+
+        Value *udiv = builder.CreateUDiv(new_phi, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
+        Value *mult = builder.CreateMul(udiv, ConstantInt::get(Type::getInt32Ty(ctx), SELECTIVE_RATE));
+        Value *diff = builder.CreateSub(new_phi, mult);
+
+        Value *loopCondition = builder.CreateICmpEQ(diff, ConstantInt::get(Type::getInt32Ty(ctx), 0), "loopCondition");
+        BranchInst *branch = builder.CreateCondBr(loopCondition, oldHeader, cast<BasicBlock>(blockMap[oldHeader]));
+        dummybranch->eraseFromParent();
 
         // 5. Modify loop exits
         // for (BasicBlock* BB : perforatedBlocks) {
