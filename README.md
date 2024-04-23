@@ -7,6 +7,18 @@ cmake ..
 make
 ```
 
+# Test with the Wrapped Running Script
+```
+cd benchmark
+sh run.sh sum-to-n/sum-to-n
+```
+
+# Visualize the result
+Please comment out the rm in run.sh first.
+```
+sh viz.sh sum-to-n/sum-to-n.fplicm
+```
+
 # Run the optimization pass
 Go to the project directory.
 ```
