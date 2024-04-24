@@ -26,7 +26,7 @@
 
 using namespace llvm;
 
-#define THREASHOLD 0.05
+#define THREASHOLD 0.1
 #define SELECTIVE_RATE 4  // for now, only support power of 2
 #define FLIP_PERF false
 // O: original code
@@ -96,6 +96,7 @@ namespace {
         }
       }
 
+      // errs() << format("Loop candidates: %d\n", loop_candidates.size());
 
       /** Selective Perforation **/
 
