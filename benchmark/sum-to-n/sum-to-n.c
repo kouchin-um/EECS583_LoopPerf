@@ -10,7 +10,7 @@ int sum_to_n(int n) {
 
 int main(int argc, char const *argv[]) {
     // FILE *file = fopen("result_sum_to_n_1.txt", "w");
-    int res = sum_to_n(5);
+    int res = sum_to_n(10000);
     // fprintf(file, "%d", res);
     printf("%d\n", res);
     // printf("sum_to_n finished executing \n");

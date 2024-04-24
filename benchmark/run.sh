@@ -36,6 +36,7 @@ echo "@@@ Running the original program..."
 echo "@@@ Time profile result:"
 time ./${1}_prof > ${TESTDIR}/correct_output
 echo "@@@ Output stored to ${TESTDIR}/correct_output"
+echo "@@@ Graph stored to ${TESTDIR}/dot/$(basename ${1}).cfg.pdf"
 
 # Converting it to LLVM form. This step can also be used to combine multiple profraw files,
 # in case you want to include different profile runs together.
@@ -54,10 +55,11 @@ clang ${1}.fplicm.bc -o ${1}_fplicm
 
 # # Produce output from binary to check correctness
 echo "###############################"
-echo "@@@ Running the original program..."
+echo "@@@ Running the perforated program..."
 echo "@@@ Time profile result:"
 time ./${1}_fplicm > ${TESTDIR}/fplicm_output
 echo "@@@ Output stored to ${TESTDIR}/fplicm_output"
+echo "@@@ Graph stored to ${TESTDIR}/dot/$(basename ${1}).fplicm.cfg.pdf"
 
 
 # echo -e "\n=== Program Correctness Validation ==="
