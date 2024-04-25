@@ -11,6 +11,7 @@ make
 ```
 cd benchmark
 sh run.sh sum-to-n/sum-to-n
+sh run.sh mat-mul/mat-mul
 ```
 
 # Visualize the result

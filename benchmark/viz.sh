@@ -43,7 +43,10 @@ if [ $VIZ_TYPE = "cfg" ]; then
 else
   DOT_FILES=$(ls *.dot)
 fi
-cat $DOT_FILES | dot -Tpdf > $OUTPUT_DIR/$(basename "$BENCH").$VIZ_TYPE.pdf
+
+for DOT_FILE in ${DOT_FILES}; do
+  cat $DOT_FILE | dot -Tpdf > $OUTPUT_DIR/${DOT_FILE}.$VIZ_TYPE.pdf
+done
 echo "Created $BENCH.$VIZ_TYPE.pdf"
 
 rm -rf $TMP_DIR

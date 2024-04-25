@@ -26,7 +26,8 @@
 
 using namespace llvm;
 
-#define THREASHOLD 0.1
+#define THRESHOLD 0.0 // [0.0,1.0]
+#define SUBLOOPTHRESHOLD 1.0  // [0.0,1.0]
 #define SELECTIVE_RATE 4  // for now, only support power of 2
 #define FLIP_PERF false
 // O: original code
@@ -59,6 +60,16 @@ namespace {
           uint64_t instr_count;
     } LoopInfo;
 
+    void FindInnerMost(std::vector<Loop*>& loop_vec, Loop* L) {
+      if (L->isInnermost()) {
+        loop_vec.emplace_back(L);
+        return;
+      }
+      for (Loop *SL : L->getSubLoops()) {
+        FindInnerMost(loop_vec, SL);
+      }
+    }
+
     PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
       llvm::BlockFrequencyAnalysis::Result &bfi = FAM.getResult<BlockFrequencyAnalysis>(F);
       llvm::LoopAnalysis::Result &li = FAM.getResult<LoopAnalysis>(F);
@@ -83,14 +94,33 @@ namespace {
           uint64_t num_instr = std::distance(bb->begin(), bb->end());
           instr_count += bb_freq * num_instr;
         }
-        loop_info.emplace_back(LoopInfo{loop, instr_count});
+        
+        bool perf_sub = false;
+        std::vector<Loop*> inner_most;
+        Loop* cur_loop = loop;
+        FindInnerMost(inner_most, loop);
+        for (Loop* sub_loop : inner_most) {
+          uint64_t sub_instr_count = 0;
+          for (auto &bb : sub_loop->getBlocksVector()) {
+            uint64_t bb_freq = bfi.getBlockFreq(bb).getFrequency();
+            uint64_t num_instr = std::distance(bb->begin(), bb->end());
+            sub_instr_count += bb_freq * num_instr;
+          }
+          if ((double)sub_instr_count > SUBLOOPTHRESHOLD * (double)instr_count) {
+            loop_info.emplace_back(LoopInfo{sub_loop, sub_instr_count});
+            perf_sub = true;
+          }
+        }
+
+        if (!perf_sub)
+          loop_info.emplace_back(LoopInfo{loop, instr_count});
       }
 
       std::vector<Loop*> loop_candidates;
 
-      // The loops whose total frequency exceeds the threashold are selected as candidates
+      // The loops whose total frequency exceeds the threshold are selected as candidates
       for (auto &loop : loop_info) {
-        if ((double)loop.instr_count / (double)CountFrequencyPass::total_freq > THREASHOLD){
+        if ((double)loop.instr_count / (double)CountFrequencyPass::total_freq > THRESHOLD){
           loop_candidates.emplace_back(loop.L);
           // errs() << format("%d / %d\n", loop.instr_count, CountFrequencyPass::total_freq);  
         }
@@ -115,6 +145,7 @@ namespace {
         for (BasicBlock *BB : loop->getBlocks()) {
           for (Instruction &I : *BB) {
             unsigned op = I.getOpcode();
+            // exclude branches
             if (op == Instruction::Br ||
                 op == Instruction::Switch ||
                 op == Instruction::IndirectBr ||
@@ -122,27 +153,34 @@ namespace {
                 op == Instruction::Call) {
               exclude_queue.push(&I);
               exclude_set.emplace(&I);
-            } else {
-              // operands of instructions: https://llvm.org/docs/LangRef.html
-              Instruction* ptr_instr;
-              if (op == Instruction::Load){
-                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
-              } else if (op == Instruction::Store) {
-                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
-              } else if (op == Instruction::GetElementPtr) {
-                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
-              } else if (op == Instruction::PtrToInt) {
-                ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
-              } else {
-                continue;
-              }
-
-              if (all_instr.find(ptr_instr) != all_instr.end() &&
-                  exclude_set.find(ptr_instr) == exclude_set.end()) {
-                exclude_queue.push(ptr_instr);
-                exclude_set.emplace(ptr_instr);
-              }
+            } 
+            // exclude pointer calculations
+            else if (I.getType()->isPointerTy()) {
+              exclude_queue.push(&I);
+              exclude_set.emplace(&I);
             }
+            
+            // else {
+            //   // operands of instructions: https://llvm.org/docs/LangRef.html
+            //   Instruction* ptr_instr;
+            //   if (op == Instruction::Load){
+            //     ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
+            //   } else if (op == Instruction::Store) {
+            //     ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
+            //   } else if (op == Instruction::GetElementPtr) {
+            //     ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(1));
+            //   } else if (op == Instruction::PtrToInt) {
+            //     ptr_instr = dyn_cast<llvm::Instruction>(I.getOperand(0));
+            //   } else {
+            //     continue;
+            //   }
+
+            //   if (all_instr.find(ptr_instr) != all_instr.end() &&
+            //       exclude_set.find(ptr_instr) == exclude_set.end()) {
+            //     exclude_queue.push(ptr_instr);
+            //     exclude_set.emplace(ptr_instr);
+            //   }
+            // }
           }
         }
 
@@ -171,25 +209,42 @@ namespace {
 
           // exclude induction variables in the load/store pair form
           if (cur_instr->getOpcode() == Instruction::Load) {
-            Value* source_ptr = cur_instr->getOperand(0);
-            Instruction* source_ptr_instr = dyn_cast<llvm::Instruction>(source_ptr);
-            for (Instruction* find_store : all_instr) {
-              if (find_store->getOpcode() == Instruction::Store && find_store->getOperand(1) == source_ptr) {
-                if (exclude_set.find(find_store) == exclude_set.end()) {
-                  exclude_queue.push(find_store);
-                  exclude_set.emplace(find_store);
+            bool isa_induct = false;
+            for (User* U:cur_instr->users()){ // U is of type User *
+              if (Instruction* I = dyn_cast<Instruction>(U)){
+                unsigned use_op = I->getOpcode();
+                if (all_instr.find(I) != all_instr.end()) {
+                  if (use_op == Instruction::ICmp) {
+                    isa_induct = true;
+                    break;
+                  }
+                }
+              }
+            }
+            if (isa_induct) {
+              Value* source_ptr = cur_instr->getOperand(0);
+              Instruction* source_ptr_instr = dyn_cast<llvm::Instruction>(source_ptr);
+              for (Instruction* find_store : all_instr) {
+                if (find_store->getOpcode() == Instruction::Store && find_store->getOperand(1) == source_ptr) {
+                  if (exclude_set.find(find_store) == exclude_set.end()) {
+                    exclude_queue.push(find_store);
+                    exclude_set.emplace(find_store);
+                  }
                 }
               }
             }
           }
         }
 
-        // select all loads
+        // select stores and loads
         std::unordered_set<Instruction*> target_instr;
         std::queue<Instruction*> instr_queue;
         for (BasicBlock *BB : loop->getBlocks()) {
           for (Instruction &I : *BB) {
-            if (I.getOpcode() == Instruction::Load && exclude_set.find(&I) == exclude_set.end()) {
+            if (I.getOpcode() == Instruction::Store && !I.getOperand(0)->getType()->isPointerTy() && exclude_set.find(&I) == exclude_set.end()) {
+              target_instr.emplace(&I);
+              instr_queue.push(&I);
+            } else if (I.getOpcode() == Instruction::Load && exclude_set.find(&I) == exclude_set.end()) {
               target_instr.emplace(&I);
               instr_queue.push(&I);
             }
