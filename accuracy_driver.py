@@ -83,9 +83,6 @@ def main():
         compare_matrices(args.filename1, args.filename2)
     elif args.benchmark == 'test':
         print("executing test comparison")
-    elif args.benchmark == 'nested':
-        compare_sum(args.filename1, args.filename2)
-        print("executing nested for loop execution")
     else:
         print("error benchmark name")
 
